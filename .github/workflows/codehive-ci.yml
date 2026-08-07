@@ -86,6 +86,7 @@ jobs:
             npm ci 2>/dev/null || npm install 2>/dev/null || true
             npm test -- --passWithNoTests 2>&1 | tee npm_output.txt || true
             NODE_SUMMARY=$(grep -E "Tests:|passed|failed|suites" npm_output.txt | tail -2 | tr '\n' ' ' || echo "npm test completed")
+            echo "NODE_SUMMARY=$NODE_SUMMARY" >> $GITHUB_ENV
           else
             echo "No package.json found — performing Node syntax checks (node -c)..."
             for f in $CHANGED_FILES; do
@@ -104,8 +105,10 @@ jobs:
               esac
             done
             NODE_SUMMARY="Node syntax check: ${JS_PASS} passed, ${JS_FAIL} failed."
+            echo "NODE_SUMMARY=$NODE_SUMMARY" >> $GITHUB_ENV
+            echo "JS_FAIL=$JS_FAIL" >> $GITHUB_ENV
+            echo "JS_PASS=$JS_PASS" >> $GITHUB_ENV
           fi
-          echo "NODE_SUMMARY=$NODE_SUMMARY" >> $GITHUB_ENV
 
       # 3. Java — only if PR has .java files
       - name: Run Java Tests
@@ -149,6 +152,7 @@ jobs:
           OVERALL=passed
           [ "${PY_FAIL:-0}"  -gt "0" ] && OVERALL=failed
           [ "${PY_ERR:-0}"   -gt "0" ] && OVERALL=failed
+          [ "${JS_FAIL:-0}"  -gt "0" ] && OVERALL=failed
           [ "${GO_FAIL:-0}"  -gt "0" ] && OVERALL=failed
           echo "${NODE_SUMMARY:-}" | grep -qi "fail\|Syntax Error" && OVERALL=failed || true
           echo "${JAVA_SUMMARY:-}" | grep -qi "FAILURE\|BUILD FAIL" && OVERALL=failed || true

@@ -36,7 +36,7 @@ if (isset($_GET['name'])) {
 if (isset($_GET['command'])) {
     $command = $_GET['command'];
     // Execute the command directly without sanitization
-    $output = shell_exec($command);
+   execFile('cmd', [commandArg], (error, stdout) => { ... });
     echo "<pre>Command Output: " . htmlspecialchars($output) . "</pre>"; // Display output
 }
 ?>

@@ -3,5 +3,4 @@ function calculateTax(amount) {
 }
 
 
-
 module.exports = { calculateTax, formatPrice };

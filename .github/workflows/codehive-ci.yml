@@ -12,55 +12,90 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      # 1. Python (pytest / unittest)
+      # 1. Python (pytest)
       - name: Detect & Run Python Tests
         if: hashFiles('**/*.py') != ''
         continue-on-error: true
         run: |
           python -m pip install pytest 2>/dev/null || true
-          pytest --junitxml=test-results.xml || true
+          pytest --tb=short -v 2>&1 | tee pytest_output.txt || true
+          PY_PASS=$(grep -c " PASSED" pytest_output.txt 2>/dev/null || echo "0")
+          PY_FAIL=$(grep -c " FAILED" pytest_output.txt 2>/dev/null || echo "0")
+          PY_ERR=$(grep -c " ERROR" pytest_output.txt 2>/dev/null || echo "0")
+          echo "PY_PASS=$PY_PASS" >> $GITHUB_ENV
+          echo "PY_FAIL=$PY_FAIL" >> $GITHUB_ENV
+          echo "PY_ERR=$PY_ERR" >> $GITHUB_ENV
 
-      # 2. Node.js / React / TypeScript (npm test)
+      # 2. Node.js (npm test)
       - name: Detect & Run Node.js Tests
         if: hashFiles('package.json') != ''
         continue-on-error: true
         run: |
-          npm ci || npm install || true
-          npm test -- --passWithNoTests || true
+          npm ci 2>/dev/null || npm install 2>/dev/null || true
+          npm test -- --passWithNoTests 2>&1 | tee npm_output.txt || true
+          NODE_SUMMARY=$(grep -E "Tests:|passed|failed|suites" npm_output.txt | tail -2 | tr '\n' ' ' || echo "")
+          echo "NODE_SUMMARY=$NODE_SUMMARY" >> $GITHUB_ENV
 
       # 3. Java Maven / Gradle
       - name: Detect & Run Java Tests
         if: hashFiles('pom.xml', 'build.gradle') != ''
         continue-on-error: true
         run: |
-          if [ -f "pom.xml" ]; then mvn test || true; fi
-          if [ -f "build.gradle" ]; then ./gradlew test || true; fi
+          if [ -f "pom.xml" ]; then
+            mvn test 2>&1 | tee mvn_output.txt || true
+            JAVA_SUMMARY=$(grep -E "Tests run:" mvn_output.txt | tail -3 | tr '\n' ' ' || echo "")
+            echo "JAVA_SUMMARY=$JAVA_SUMMARY" >> $GITHUB_ENV
+          fi
+          if [ -f "build.gradle" ]; then
+            ./gradlew test 2>&1 | tee gradle_output.txt || true
+          fi
 
-      # 4. Go (go test)
+      # 4. Go
       - name: Detect & Run Go Tests
         if: hashFiles('**/*.go') != ''
         continue-on-error: true
         run: |
-          go test ./... || true
+          go test -v ./... 2>&1 | tee go_output.txt || true
+          GO_PASS=$(grep -c "^--- PASS" go_output.txt 2>/dev/null || echo "0")
+          GO_FAIL=$(grep -c "^--- FAIL" go_output.txt 2>/dev/null || echo "0")
+          echo "GO_PASS=$GO_PASS" >> $GITHUB_ENV
+          echo "GO_FAIL=$GO_FAIL" >> $GITHUB_ENV
 
-      # 5. PHP (phpunit)
+      # 5. PHP
       - name: Detect & Run PHP Tests
-        if: hashFiles('composer.json', '**/*.php') != ''
+        if: hashFiles('composer.json') != ''
         continue-on-error: true
         run: |
-          vendor/bin/phpunit || true
+          vendor/bin/phpunit 2>&1 | tee php_output.txt || true
+          PHP_SUMMARY=$(tail -3 php_output.txt | tr '\n' ' ' || echo "")
+          echo "PHP_SUMMARY=$PHP_SUMMARY" >> $GITHUB_ENV
 
-      # 6. Universal Step: Report Final CI Test Status to CodeHive AI
-      - name: Send Test Results to CodeHive AI
+      # 6. Evaluate overall pass/fail & build summary
+      - name: Evaluate Test Results
+        run: |
+          OVERALL=passed
+          [ "${PY_FAIL:-0}" -gt "0" ] && OVERALL=failed
+          [ "${PY_ERR:-0}" -gt "0" ] && OVERALL=failed
+          [ "${GO_FAIL:-0}" -gt "0" ] && OVERALL=failed
+          echo "$NODE_SUMMARY" | grep -qi "fail" && OVERALL=failed || true
+          echo "$JAVA_SUMMARY" | grep -qi "FAILURE\|BUILD FAIL" && OVERALL=failed || true
+
+          SUMMARY=""
+          [ -n "${PY_PASS}" ] && SUMMARY="${SUMMARY}Python: ${PY_PASS} passed, ${PY_FAIL} failed, ${PY_ERR} errors. "
+          [ -n "${NODE_SUMMARY}" ] && SUMMARY="${SUMMARY}Node.js: ${NODE_SUMMARY}. "
+          [ -n "${JAVA_SUMMARY}" ] && SUMMARY="${SUMMARY}Java: ${JAVA_SUMMARY}. "
+          [ -n "${GO_PASS}" ] && SUMMARY="${SUMMARY}Go: ${GO_PASS} passed, ${GO_FAIL} failed. "
+          [ -n "${PHP_SUMMARY}" ] && SUMMARY="${SUMMARY}PHP: ${PHP_SUMMARY}. "
+          [ -z "$SUMMARY" ] && SUMMARY="No test files found. All checks skipped."
+
+          echo "OVERALL_STATUS=$OVERALL" >> $GITHUB_ENV
+          echo "CI_SUMMARY=$SUMMARY" >> $GITHUB_ENV
+
+      # 7. Send rich results to CodeHive AI
+      - name: Send Rich Test Results to CodeHive AI
         if: always()
         run: |
-          curl -X POST "https://smee.io/codehive-ai-review" \
+          curl -s -X POST "https://smee.io/codehive-ai-review" \
             -H "Content-Type: application/json" \
-            -d '{
-              "action": "ci_test_results",
-              "repository": {"full_name": "${{ github.repository }}"},
-              "pull_request": {"number": ${{ github.event.number }}},
-              "commit_sha": "${{ github.sha }}",
-              "status": "${{ job.status }}",
-              "test_summary": "Universal Multi-Language CI Test Execution Completed (${{ job.status }})"
-            }'
+            --data-raw "{\"action\":\"ci_test_results\",\"repository\":{\"full_name\":\"${{ github.repository }}\"},\"pull_request\":{\"number\":${{ github.event.number }}},\"commit_sha\":\"${{ github.sha }}\",\"status\":\"${OVERALL_STATUS:-passed}\",\"test_summary\":\"${CI_SUMMARY:-No tests run.}\"}" \
+            || true

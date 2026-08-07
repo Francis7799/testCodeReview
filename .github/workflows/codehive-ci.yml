@@ -26,7 +26,7 @@ jobs:
             BATCH=$(curl -s \
               "https://api.github.com/repos/${REPO}/pulls/${PR_NUM}/files?per_page=100&page=${PAGE}" \
               -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-              | python3 -c "import sys,json; print('\n'.join(f['filename'] for f in json.load(sys.stdin)))" 2>/dev/null || echo "")
+              | python3 -c "import sys,json; data=json.load(sys.stdin); print('\n'.join(f['filename'] for f in data)) if isinstance(data,list) else print('')" 2>/dev/null || echo "")
             [ -z "$BATCH" ] && break
             CHANGED="${CHANGED} ${BATCH}"
             PAGE=$((PAGE + 1))
@@ -55,6 +55,7 @@ jobs:
           echo "HAS_JAVA=$HAS_JAVA" >> $GITHUB_ENV
           echo "HAS_GO=$HAS_GO"     >> $GITHUB_ENV
           echo "HAS_PHP=$HAS_PHP"   >> $GITHUB_ENV
+          echo "CHANGED_FILES=$CHANGED" >> $GITHUB_ENV
 
           echo "Detected -> Python:${HAS_PY} JS:${HAS_JS} Java:${HAS_JAVA} Go:${HAS_GO} PHP:${HAS_PHP}"
 
@@ -73,15 +74,37 @@ jobs:
           echo "PY_FAIL=$PY_FAIL" >> $GITHUB_ENV
           echo "PY_ERR=$PY_ERR"   >> $GITHUB_ENV
 
-      # 2. Node.js — only if PR has .js/.ts files AND package.json exists
-      - name: Run Node.js Tests
-        if: env.HAS_JS == 'true' && hashFiles('package.json') != ''
+      # 2. JavaScript / TypeScript — syntax check & npm test if package.json exists
+      - name: Run JavaScript / TypeScript Tests
+        if: env.HAS_JS == 'true'
         continue-on-error: true
         run: |
-          echo "Running Node.js tests..."
-          npm ci 2>/dev/null || npm install 2>/dev/null || true
-          npm test -- --passWithNoTests 2>&1 | tee npm_output.txt || true
-          NODE_SUMMARY=$(grep -E "Tests:|passed|failed|suites" npm_output.txt | tail -2 | tr '\n' ' ' || echo "no tests")
+          echo "Running JavaScript / TypeScript validation..."
+          JS_PASS=0
+          JS_FAIL=0
+          if [ -f "package.json" ]; then
+            npm ci 2>/dev/null || npm install 2>/dev/null || true
+            npm test -- --passWithNoTests 2>&1 | tee npm_output.txt || true
+            NODE_SUMMARY=$(grep -E "Tests:|passed|failed|suites" npm_output.txt | tail -2 | tr '\n' ' ' || echo "npm test completed")
+          else
+            echo "No package.json found — performing Node syntax checks (node -c)..."
+            for f in $CHANGED_FILES; do
+              case "$f" in
+                *.js|*.jsx|*.mjs|*.ts|*.tsx)
+                  if [ -f "$f" ]; then
+                    if node -c "$f" 2>/dev/null; then
+                      echo "Syntax OK: $f"
+                      JS_PASS=$((JS_PASS + 1))
+                    else
+                      echo "Syntax Error: $f"
+                      JS_FAIL=$((JS_FAIL + 1))
+                    fi
+                  fi
+                  ;;
+              esac
+            done
+            NODE_SUMMARY="Node syntax check: ${JS_PASS} passed, ${JS_FAIL} failed."
+          fi
           echo "NODE_SUMMARY=$NODE_SUMMARY" >> $GITHUB_ENV
 
       # 3. Java — only if PR has .java files
@@ -127,12 +150,12 @@ jobs:
           [ "${PY_FAIL:-0}"  -gt "0" ] && OVERALL=failed
           [ "${PY_ERR:-0}"   -gt "0" ] && OVERALL=failed
           [ "${GO_FAIL:-0}"  -gt "0" ] && OVERALL=failed
-          echo "${NODE_SUMMARY:-}" | grep -qi "fail" && OVERALL=failed || true
+          echo "${NODE_SUMMARY:-}" | grep -qi "fail\|Syntax Error" && OVERALL=failed || true
           echo "${JAVA_SUMMARY:-}" | grep -qi "FAILURE\|BUILD FAIL" && OVERALL=failed || true
 
           SUMMARY=""
           [ "$HAS_PY"   = "true" ] && SUMMARY="${SUMMARY}Python: ${PY_PASS:-0} passed, ${PY_FAIL:-0} failed, ${PY_ERR:-0} errors. "
-          [ "$HAS_JS"   = "true" ] && SUMMARY="${SUMMARY}Node.js: ${NODE_SUMMARY:-no tests}. "
+          [ "$HAS_JS"   = "true" ] && SUMMARY="${SUMMARY}JS/TS: ${NODE_SUMMARY:-syntax ok}. "
           [ "$HAS_JAVA" = "true" ] && SUMMARY="${SUMMARY}Java: ${JAVA_SUMMARY:-no tests}. "
           [ "$HAS_GO"   = "true" ] && SUMMARY="${SUMMARY}Go: ${GO_PASS:-0} passed, ${GO_FAIL:-0} failed. "
           [ "$HAS_PHP"  = "true" ] && SUMMARY="${SUMMARY}PHP: ${PHP_SUMMARY:-no tests}. "

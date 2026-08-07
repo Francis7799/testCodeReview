@@ -1,15 +1,11 @@
-// checkout.js — Checkout processing
-
 function processCheckout(cart, user) {
-    // These exist in utils.js — should PASS
-    const tax = calculateTax(cart.total);
-    const price = formatCurrency(cart.total + tax);
-    const emailValid = validateUserEmail(user.email);
+    const tax = calculateTax(cart.total);             // Defined in utils.js — should PASS
+    const price = formatCurrency(cart.total + tax);    // Defined in utils.js — should PASS
+    const emailValid = validateUserEmail(user.email);  // Defined in utils.js — should PASS
 
-    // These DON'T EXIST anywhere — should be FLAGGED as CRITICAL bugs
-    const discount = applyLoyaltyDiscount(user.id);        // ghost function
-    const fraud = runFraudDetectionEngine(cart);           // ghost function
-    const shipping = calculateShippingMatrix(cart.items);  // ghost function
+    const discount = applyLoyaltyDiscount(user.id);       // GHOST FUNCTION — should flag CRITICAL
+    const fraud = runFraudDetectionEngine(cart);         // GHOST FUNCTION — should flag CRITICAL
+    const shipping = calculateShippingMatrix(cart.items); // GHOST FUNCTION — should flag CRITICAL
 
     return { price, tax, emailValid, discount, fraud, shipping };
 }

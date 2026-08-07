@@ -14,25 +14,13 @@ jobs:
         with:
           fetch-depth: 0
 
-      # Use GitHub API to get exact list of files changed in this PR
+      # Bulletproof language detection from git diff & repo files
       - name: Detect Changed File Languages
         run: |
-          PR_NUM=${{ github.event.number }}
-          REPO=${{ github.repository }}
-          PAGE=1
-          CHANGED=""
-
-          while true; do
-            BATCH=$(curl -s \
-              "https://api.github.com/repos/${REPO}/pulls/${PR_NUM}/files?per_page=100&page=${PAGE}" \
-              -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-              | python3 -c "import sys,json; data=json.load(sys.stdin); print('\n'.join(f['filename'] for f in data)) if isinstance(data,list) else print('')" 2>/dev/null || echo "")
-            [ -z "$BATCH" ] && break
-            CHANGED="${CHANGED} ${BATCH}"
-            PAGE=$((PAGE + 1))
-          done
-
-          echo "PR changed files: $CHANGED"
+          git fetch origin ${{ github.base_ref }}:refs/remotes/origin/${{ github.base_ref }} 2>/dev/null || true
+          CHANGED=$(git diff --name-only origin/${{ github.base_ref }}...HEAD 2>/dev/null || git diff --name-only HEAD~1 2>/dev/null || git ls-files)
+          echo "PR changed files:"
+          echo "$CHANGED"
 
           HAS_PY=false
           HAS_JS=false
@@ -42,29 +30,28 @@ jobs:
 
           for f in $CHANGED; do
             case "$f" in
-              *.py)             HAS_PY=true ;;
+              *.py)                        HAS_PY=true ;;
               *.js|*.jsx|*.mjs|*.ts|*.tsx) HAS_JS=true ;;
-              *.java)           HAS_JAVA=true ;;
-              *.go)             HAS_GO=true ;;
-              *.php)            HAS_PHP=true ;;
+              *.java)                      HAS_JAVA=true ;;
+              *.go)                        HAS_GO=true ;;
+              *.php)                       HAS_PHP=true ;;
             esac
           done
 
-          echo "HAS_PY=$HAS_PY"     >> $GITHUB_ENV
-          echo "HAS_JS=$HAS_JS"     >> $GITHUB_ENV
-          echo "HAS_JAVA=$HAS_JAVA" >> $GITHUB_ENV
-          echo "HAS_GO=$HAS_GO"     >> $GITHUB_ENV
-          echo "HAS_PHP=$HAS_PHP"   >> $GITHUB_ENV
-          echo "CHANGED_FILES=$CHANGED" >> $GITHUB_ENV
+          echo "HAS_PY=$HAS_PY"         >> $GITHUB_ENV
+          echo "HAS_JS=$HAS_JS"         >> $GITHUB_ENV
+          echo "HAS_JAVA=$HAS_JAVA"     >> $GITHUB_ENV
+          echo "HAS_GO=$HAS_GO"         >> $GITHUB_ENV
+          echo "HAS_PHP=$HAS_PHP"       >> $GITHUB_ENV
 
-          echo "Detected -> Python:${HAS_PY} JS:${HAS_JS} Java:${HAS_JAVA} Go:${HAS_GO} PHP:${HAS_PHP}"
+          echo "Detected Languages -> Python:${HAS_PY} JS/TS:${HAS_JS} Java:${HAS_JAVA} Go:${HAS_GO} PHP:${HAS_PHP}"
 
-      # 1. Python — only if PR has .py files
+      # 1. Python
       - name: Run Python Tests
         if: env.HAS_PY == 'true'
         continue-on-error: true
         run: |
-          echo "Running Python tests..."
+          echo "Running Python validation..."
           python -m pip install pytest 2>/dev/null || true
           pytest --tb=short -v 2>&1 | tee pytest_output.txt || true
           PY_PASS=$(grep -c " PASSED" pytest_output.txt 2>/dev/null || echo "0")
@@ -74,7 +61,7 @@ jobs:
           echo "PY_FAIL=$PY_FAIL" >> $GITHUB_ENV
           echo "PY_ERR=$PY_ERR"   >> $GITHUB_ENV
 
-      # 2. JavaScript / TypeScript — syntax check & npm test if package.json exists
+      # 2. JavaScript / TypeScript — Syntax check with node -c & npm test if package.json exists
       - name: Run JavaScript / TypeScript Tests
         if: env.HAS_JS == 'true'
         continue-on-error: true
@@ -82,40 +69,40 @@ jobs:
           echo "Running JavaScript / TypeScript validation..."
           JS_PASS=0
           JS_FAIL=0
+          
+          # Find all JS/TS files changed
+          JS_FILES=$(git diff --name-only HEAD~1 2>/dev/null | grep -E '\.(js|jsx|mjs|ts|tsx)$' || find . -maxdepth 2 -name "*.js")
+          
+          for f in $JS_FILES; do
+            if [ -f "$f" ]; then
+              if node -c "$f" 2>&1 | tee -a js_syntax.log; then
+                echo "Syntax OK: $f"
+                JS_PASS=$((JS_PASS + 1))
+              else
+                echo "Syntax Error: $f"
+                JS_FAIL=$((JS_FAIL + 1))
+              fi
+            fi
+          done
+
           if [ -f "package.json" ]; then
             npm ci 2>/dev/null || npm install 2>/dev/null || true
             npm test -- --passWithNoTests 2>&1 | tee npm_output.txt || true
-            NODE_SUMMARY=$(grep -E "Tests:|passed|failed|suites" npm_output.txt | tail -2 | tr '\n' ' ' || echo "npm test completed")
-            echo "NODE_SUMMARY=$NODE_SUMMARY" >> $GITHUB_ENV
+            NODE_SUMMARY=$(grep -E "Tests:|passed|failed|suites" npm_output.txt | tail -2 | tr '\n' ' ' || echo "JS Syntax: ${JS_PASS} passed, ${JS_FAIL} failed")
           else
-            echo "No package.json found — performing Node syntax checks (node -c)..."
-            for f in $CHANGED_FILES; do
-              case "$f" in
-                *.js|*.jsx|*.mjs|*.ts|*.tsx)
-                  if [ -f "$f" ]; then
-                    if node -c "$f" 2>/dev/null; then
-                      echo "Syntax OK: $f"
-                      JS_PASS=$((JS_PASS + 1))
-                    else
-                      echo "Syntax Error: $f"
-                      JS_FAIL=$((JS_FAIL + 1))
-                    fi
-                  fi
-                  ;;
-              esac
-            done
             NODE_SUMMARY="Node syntax check: ${JS_PASS} passed, ${JS_FAIL} failed."
-            echo "NODE_SUMMARY=$NODE_SUMMARY" >> $GITHUB_ENV
-            echo "JS_FAIL=$JS_FAIL" >> $GITHUB_ENV
-            echo "JS_PASS=$JS_PASS" >> $GITHUB_ENV
           fi
 
-      # 3. Java — only if PR has .java files
+          echo "NODE_SUMMARY=$NODE_SUMMARY" >> $GITHUB_ENV
+          echo "JS_FAIL=$JS_FAIL"           >> $GITHUB_ENV
+          echo "JS_PASS=$JS_PASS"           >> $GITHUB_ENV
+
+      # 3. Java
       - name: Run Java Tests
         if: env.HAS_JAVA == 'true'
         continue-on-error: true
         run: |
-          echo "Running Java tests..."
+          echo "Running Java validation..."
           if [ -f "pom.xml" ]; then
             mvn test 2>&1 | tee mvn_output.txt || true
             JAVA_SUMMARY=$(grep -E "Tests run:" mvn_output.txt | tail -3 | tr '\n' ' ' || echo "no tests")
@@ -124,24 +111,24 @@ jobs:
             ./gradlew test 2>&1 || true
           fi
 
-      # 4. Go — only if PR has .go files
+      # 4. Go
       - name: Run Go Tests
         if: env.HAS_GO == 'true'
         continue-on-error: true
         run: |
-          echo "Running Go tests..."
+          echo "Running Go validation..."
           go test -v ./... 2>&1 | tee go_output.txt || true
           GO_PASS=$(grep -c "^--- PASS" go_output.txt 2>/dev/null || echo "0")
           GO_FAIL=$(grep -c "^--- FAIL" go_output.txt 2>/dev/null || echo "0")
           echo "GO_PASS=$GO_PASS" >> $GITHUB_ENV
           echo "GO_FAIL=$GO_FAIL" >> $GITHUB_ENV
 
-      # 5. PHP — only if PR has .php files
+      # 5. PHP
       - name: Run PHP Tests
         if: env.HAS_PHP == 'true' && hashFiles('composer.json') != ''
         continue-on-error: true
         run: |
-          echo "Running PHP tests..."
+          echo "Running PHP validation..."
           vendor/bin/phpunit 2>&1 | tee php_output.txt || true
           PHP_SUMMARY=$(tail -3 php_output.txt | tr '\n' ' ' || echo "no tests")
           echo "PHP_SUMMARY=$PHP_SUMMARY" >> $GITHUB_ENV

@@ -11,88 +11,139 @@ jobs:
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      # 1. Python (pytest)
-      - name: Detect & Run Python Tests
-        if: hashFiles('**/*.py') != ''
+      # Use GitHub API to get exact list of files changed in this PR
+      - name: Detect Changed File Languages
+        run: |
+          PR_NUM=${{ github.event.number }}
+          REPO=${{ github.repository }}
+          PAGE=1
+          CHANGED=""
+
+          while true; do
+            BATCH=$(curl -s \
+              "https://api.github.com/repos/${REPO}/pulls/${PR_NUM}/files?per_page=100&page=${PAGE}" \
+              -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+              | python3 -c "import sys,json; print('\n'.join(f['filename'] for f in json.load(sys.stdin)))" 2>/dev/null || echo "")
+            [ -z "$BATCH" ] && break
+            CHANGED="${CHANGED} ${BATCH}"
+            PAGE=$((PAGE + 1))
+          done
+
+          echo "PR changed files: $CHANGED"
+
+          HAS_PY=false
+          HAS_JS=false
+          HAS_JAVA=false
+          HAS_GO=false
+          HAS_PHP=false
+
+          for f in $CHANGED; do
+            case "$f" in
+              *.py)             HAS_PY=true ;;
+              *.js|*.jsx|*.mjs|*.ts|*.tsx) HAS_JS=true ;;
+              *.java)           HAS_JAVA=true ;;
+              *.go)             HAS_GO=true ;;
+              *.php)            HAS_PHP=true ;;
+            esac
+          done
+
+          echo "HAS_PY=$HAS_PY"     >> $GITHUB_ENV
+          echo "HAS_JS=$HAS_JS"     >> $GITHUB_ENV
+          echo "HAS_JAVA=$HAS_JAVA" >> $GITHUB_ENV
+          echo "HAS_GO=$HAS_GO"     >> $GITHUB_ENV
+          echo "HAS_PHP=$HAS_PHP"   >> $GITHUB_ENV
+
+          echo "Detected -> Python:${HAS_PY} JS:${HAS_JS} Java:${HAS_JAVA} Go:${HAS_GO} PHP:${HAS_PHP}"
+
+      # 1. Python — only if PR has .py files
+      - name: Run Python Tests
+        if: env.HAS_PY == 'true'
         continue-on-error: true
         run: |
+          echo "Running Python tests..."
           python -m pip install pytest 2>/dev/null || true
           pytest --tb=short -v 2>&1 | tee pytest_output.txt || true
           PY_PASS=$(grep -c " PASSED" pytest_output.txt 2>/dev/null || echo "0")
           PY_FAIL=$(grep -c " FAILED" pytest_output.txt 2>/dev/null || echo "0")
-          PY_ERR=$(grep -c " ERROR" pytest_output.txt 2>/dev/null || echo "0")
+          PY_ERR=$(grep -c " ERROR"  pytest_output.txt 2>/dev/null || echo "0")
           echo "PY_PASS=$PY_PASS" >> $GITHUB_ENV
           echo "PY_FAIL=$PY_FAIL" >> $GITHUB_ENV
-          echo "PY_ERR=$PY_ERR" >> $GITHUB_ENV
+          echo "PY_ERR=$PY_ERR"   >> $GITHUB_ENV
 
-      # 2. Node.js (npm test)
-      - name: Detect & Run Node.js Tests
-        if: hashFiles('package.json') != ''
+      # 2. Node.js — only if PR has .js/.ts files AND package.json exists
+      - name: Run Node.js Tests
+        if: env.HAS_JS == 'true' && hashFiles('package.json') != ''
         continue-on-error: true
         run: |
+          echo "Running Node.js tests..."
           npm ci 2>/dev/null || npm install 2>/dev/null || true
           npm test -- --passWithNoTests 2>&1 | tee npm_output.txt || true
-          NODE_SUMMARY=$(grep -E "Tests:|passed|failed|suites" npm_output.txt | tail -2 | tr '\n' ' ' || echo "")
+          NODE_SUMMARY=$(grep -E "Tests:|passed|failed|suites" npm_output.txt | tail -2 | tr '\n' ' ' || echo "no tests")
           echo "NODE_SUMMARY=$NODE_SUMMARY" >> $GITHUB_ENV
 
-      # 3. Java Maven / Gradle
-      - name: Detect & Run Java Tests
-        if: hashFiles('pom.xml', 'build.gradle') != ''
+      # 3. Java — only if PR has .java files
+      - name: Run Java Tests
+        if: env.HAS_JAVA == 'true'
         continue-on-error: true
         run: |
+          echo "Running Java tests..."
           if [ -f "pom.xml" ]; then
             mvn test 2>&1 | tee mvn_output.txt || true
-            JAVA_SUMMARY=$(grep -E "Tests run:" mvn_output.txt | tail -3 | tr '\n' ' ' || echo "")
+            JAVA_SUMMARY=$(grep -E "Tests run:" mvn_output.txt | tail -3 | tr '\n' ' ' || echo "no tests")
             echo "JAVA_SUMMARY=$JAVA_SUMMARY" >> $GITHUB_ENV
-          fi
-          if [ -f "build.gradle" ]; then
-            ./gradlew test 2>&1 | tee gradle_output.txt || true
+          elif [ -f "build.gradle" ]; then
+            ./gradlew test 2>&1 || true
           fi
 
-      # 4. Go
-      - name: Detect & Run Go Tests
-        if: hashFiles('**/*.go') != ''
+      # 4. Go — only if PR has .go files
+      - name: Run Go Tests
+        if: env.HAS_GO == 'true'
         continue-on-error: true
         run: |
+          echo "Running Go tests..."
           go test -v ./... 2>&1 | tee go_output.txt || true
           GO_PASS=$(grep -c "^--- PASS" go_output.txt 2>/dev/null || echo "0")
           GO_FAIL=$(grep -c "^--- FAIL" go_output.txt 2>/dev/null || echo "0")
           echo "GO_PASS=$GO_PASS" >> $GITHUB_ENV
           echo "GO_FAIL=$GO_FAIL" >> $GITHUB_ENV
 
-      # 5. PHP
-      - name: Detect & Run PHP Tests
-        if: hashFiles('composer.json') != ''
+      # 5. PHP — only if PR has .php files
+      - name: Run PHP Tests
+        if: env.HAS_PHP == 'true' && hashFiles('composer.json') != ''
         continue-on-error: true
         run: |
+          echo "Running PHP tests..."
           vendor/bin/phpunit 2>&1 | tee php_output.txt || true
-          PHP_SUMMARY=$(tail -3 php_output.txt | tr '\n' ' ' || echo "")
+          PHP_SUMMARY=$(tail -3 php_output.txt | tr '\n' ' ' || echo "no tests")
           echo "PHP_SUMMARY=$PHP_SUMMARY" >> $GITHUB_ENV
 
-      # 6. Evaluate overall pass/fail & build summary
+      # 6. Evaluate real pass/fail
       - name: Evaluate Test Results
         run: |
           OVERALL=passed
-          [ "${PY_FAIL:-0}" -gt "0" ] && OVERALL=failed
-          [ "${PY_ERR:-0}" -gt "0" ] && OVERALL=failed
-          [ "${GO_FAIL:-0}" -gt "0" ] && OVERALL=failed
-          echo "$NODE_SUMMARY" | grep -qi "fail" && OVERALL=failed || true
-          echo "$JAVA_SUMMARY" | grep -qi "FAILURE\|BUILD FAIL" && OVERALL=failed || true
+          [ "${PY_FAIL:-0}"  -gt "0" ] && OVERALL=failed
+          [ "${PY_ERR:-0}"   -gt "0" ] && OVERALL=failed
+          [ "${GO_FAIL:-0}"  -gt "0" ] && OVERALL=failed
+          echo "${NODE_SUMMARY:-}" | grep -qi "fail" && OVERALL=failed || true
+          echo "${JAVA_SUMMARY:-}" | grep -qi "FAILURE\|BUILD FAIL" && OVERALL=failed || true
 
           SUMMARY=""
-          [ -n "${PY_PASS}" ] && SUMMARY="${SUMMARY}Python: ${PY_PASS} passed, ${PY_FAIL} failed, ${PY_ERR} errors. "
-          [ -n "${NODE_SUMMARY}" ] && SUMMARY="${SUMMARY}Node.js: ${NODE_SUMMARY}. "
-          [ -n "${JAVA_SUMMARY}" ] && SUMMARY="${SUMMARY}Java: ${JAVA_SUMMARY}. "
-          [ -n "${GO_PASS}" ] && SUMMARY="${SUMMARY}Go: ${GO_PASS} passed, ${GO_FAIL} failed. "
-          [ -n "${PHP_SUMMARY}" ] && SUMMARY="${SUMMARY}PHP: ${PHP_SUMMARY}. "
-          [ -z "$SUMMARY" ] && SUMMARY="No test files found. All checks skipped."
+          [ "$HAS_PY"   = "true" ] && SUMMARY="${SUMMARY}Python: ${PY_PASS:-0} passed, ${PY_FAIL:-0} failed, ${PY_ERR:-0} errors. "
+          [ "$HAS_JS"   = "true" ] && SUMMARY="${SUMMARY}Node.js: ${NODE_SUMMARY:-no tests}. "
+          [ "$HAS_JAVA" = "true" ] && SUMMARY="${SUMMARY}Java: ${JAVA_SUMMARY:-no tests}. "
+          [ "$HAS_GO"   = "true" ] && SUMMARY="${SUMMARY}Go: ${GO_PASS:-0} passed, ${GO_FAIL:-0} failed. "
+          [ "$HAS_PHP"  = "true" ] && SUMMARY="${SUMMARY}PHP: ${PHP_SUMMARY:-no tests}. "
+          [ -z "$SUMMARY" ]         && SUMMARY="No test files changed in this PR."
 
           echo "OVERALL_STATUS=$OVERALL" >> $GITHUB_ENV
-          echo "CI_SUMMARY=$SUMMARY" >> $GITHUB_ENV
+          echo "CI_SUMMARY=$SUMMARY"     >> $GITHUB_ENV
+          echo "Final: status=${OVERALL} | ${SUMMARY}"
 
-      # 7. Send rich results to CodeHive AI
-      - name: Send Rich Test Results to CodeHive AI
+      # 7. Report to CodeHive AI
+      - name: Send Results to CodeHive AI
         if: always()
         run: |
           curl -s -X POST "https://smee.io/codehive-ai-review" \

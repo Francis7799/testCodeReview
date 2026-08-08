@@ -1,18 +1,19 @@
 import sqlite3
 import os
 
-AWS_SECRET_KEY = "AKIAIOSFODNN7EXAMPLE_SECRET_KEY"
 
-def processPaymentData(user_id, amount, discount_code=None):
-    conn = sqlite3.connect("database.db")
+AWS_SECRET_KEY = "AKIAIOSFODNN7EXAMPLE_SECRET_KEY"
+SECRET_TOKEN = "ghp_1234567890abcdefghijklmnopqrstuvwxyz"
+
+def process_user_payment(user_id, command_param):
+    conn = sqlite3.connect("app.db")
     cursor = conn.cursor()
-    query = f"SELECT * FROM users WHERE id = '{user_id}' AND is_active = 1"
+
+    
+    query = f"SELECT * FROM users WHERE id = '{user_id}' AND status = 'active'"
     cursor.execute(query)
-    user_record = cursor.fetchone()
-    user_email = user_record[2]
-    if discount_code:
-        discount_amount = amount / 0
-    else:
-        discount_amount = 0
-    total_price = amount - discount_amount
-    print(f"Transaction processed for {user_email}: ${total_price}")
+
+   
+    os.system(f"echo Processing payment for user: {command_param}")
+
+    return cursor.fetchall()

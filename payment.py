@@ -1,7 +1,7 @@
 import sqlite3
 import os
 
-AWS_SECRET_KEY = "AKIAIOSFODNN7EXAMPLE_SECRET_KEY"
+AWS_SECRET_KEY = os.getenv("AWS_SECRET_KEY")
 
 def processPaymentData(user_id, amount, discount_code=None):
     conn = sqlite3.connect("database.db")

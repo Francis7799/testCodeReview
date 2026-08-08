@@ -2,6 +2,6 @@ function processCheckout(cart, user) {
     const tax = calculateTax(cart.total);         
     const total = formatPrice(cart.total + tax); 
 
-    const points = processLoyaltyPoint(user);     
+    const points = processLoyalPoint(user);     
     return { total, points };
 }

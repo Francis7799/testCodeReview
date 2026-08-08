@@ -3,7 +3,7 @@ import os
 
 AWS_SECRET_KEY = "AKIAIOSFODNN7EXAMPLE_SECRET_KEY"
 
-def processPaymentData(user_id, amount, discount_code=None):
+def process_paymentdata(user_id, amount, discount_code=None):
     conn = sqlite3.connect("database.db")
     cursor = conn.cursor()
     query = f"SELECT * FROM users WHERE id = '{user_id}' AND is_active = 1"
